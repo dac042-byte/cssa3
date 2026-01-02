@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
 import { createClient } from '@supabase/supabase-js'
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'
+const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions'
 
 interface ReflectRequest {
   thought: string
@@ -12,7 +12,7 @@ interface ReflectRequest {
   guest_session_id?: string
 }
 
-interface GeminiResponse {
+interface AIResponse {
   type: string
   distortions: string[]
   assumptions_vs_facts: string
@@ -114,11 +114,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Prepare the prompt for Gemini
+    // Prepare the prompt
     const distortionLabels = chosen_distortions.map(d => DISTORTION_LABELS[d] || d).join(', ')
     const classificationLabel = CLASSIFICATION_LABELS[classification] || classification
 
-    const prompt = `You are a CBT-informed thought analysis assistant. Analyze the following thought and provide a structured response.
+    const systemPrompt = `You are a CBT-informed thought analysis assistant. You provide structured, neutral analysis of thoughts using cognitive behavioral therapy principles. You never provide diagnoses. You respond only with valid JSON.`
+
+    const userPrompt = `Analyze the following thought and provide a structured response.
 
 User's thought: "${thought}"
 
@@ -143,43 +145,42 @@ Respond ONLY with valid JSON in exactly this format (no markdown, no code blocks
   "grounded_reframe": "One neutral, accurate reframe of the thought that acknowledges valid concerns while offering perspective"
 }`
 
-    // Call Gemini API
-    const geminiApiKey = process.env.GEMINI_API_KEY
-    if (!geminiApiKey) {
+    // Call OpenAI API
+    const openaiApiKey = process.env.OPENAI_API_KEY
+    if (!openaiApiKey) {
       return NextResponse.json(
         { error: 'API configuration error' },
         { status: 500 }
       )
     }
 
-    const geminiResponse = await fetch(`${GEMINI_API_URL}?key=${geminiApiKey}`, {
+    const openaiResponse = await fetch(OPENAI_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openaiApiKey}`,
       },
       body: JSON.stringify({
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
-        }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1024,
-        }
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 1024,
       })
     })
 
-    if (!geminiResponse.ok) {
-      console.error('Gemini API error:', await geminiResponse.text())
+    if (!openaiResponse.ok) {
+      console.error('OpenAI API error:', await openaiResponse.text())
       return NextResponse.json(
         { error: 'Failed to analyze thought' },
         { status: 500 }
       )
     }
 
-    const geminiData = await geminiResponse.json()
-    const responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text
+    const openaiData = await openaiResponse.json()
+    const responseText = openaiData.choices?.[0]?.message?.content
 
     if (!responseText) {
       return NextResponse.json(
@@ -189,7 +190,7 @@ Respond ONLY with valid JSON in exactly this format (no markdown, no code blocks
     }
 
     // Parse the JSON response
-    let parsedResponse: GeminiResponse
+    let parsedResponse: AIResponse
     try {
       // Clean up the response in case it has markdown code blocks
       const cleanedResponse = responseText
@@ -198,7 +199,7 @@ Respond ONLY with valid JSON in exactly this format (no markdown, no code blocks
         .trim()
       parsedResponse = JSON.parse(cleanedResponse)
     } catch (parseError) {
-      console.error('Failed to parse Gemini response:', responseText)
+      console.error('Failed to parse OpenAI response:', responseText)
       return NextResponse.json(
         { error: 'Failed to parse AI response' },
         { status: 500 }
